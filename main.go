@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"ore-no-db/data"
 	"os"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/handlers"
@@ -53,15 +55,63 @@ func main() {
 	r.HandleFunc("/api/records/{id}", DeleteRecord).Methods("DELETE")
 	r.HandleFunc("/api/records/{id}", UpdateRecord).Methods("PUT")
 
-	// CORS設定を追加
+	// CORS設定
 	cors := handlers.CORS(
-		handlers.AllowedOrigins([]string{"*"}),                             // すべてのオリジンを許可
-		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE"}),  // 許可するHTTPメソッド
-		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}), // 許可するHTTPヘッダ
+		handlers.AllowedOrigins([]string{"*"}),
+		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE"}),
+		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}),
 	)
 
-	// CORSを有効にしてサーバーを開始
-	log.Fatal(http.ListenAndServe(":8080", cors(r)))
+	// SO_REUSEPORT を有効にしたリスナーを作成
+	listener, err := reusePortListener("tcp", ":8080")
+	if err != nil {
+		log.Fatalf("ポートのリスニングに失敗しました: %v", err)
+	}
+
+	// HTTP サーバーを起動
+	log.Println("Server is running on port 8080...")
+	log.Fatal(http.Serve(listener, cors(r)))
+}
+
+// SO_REUSEPORT を設定したリスナーを作成
+func reusePortListener(network, address string) (net.Listener, error) {
+	// ソケットを作成
+	addr, err := net.ResolveTCPAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+
+	// `SO_REUSEPORT` を設定
+	syscallFD, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		return nil, err
+	}
+
+	// SO_REUSEPORT オプションをセット
+	if err := syscall.SetsockoptInt(syscallFD, syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1); err != nil {
+		return nil, err
+	}
+
+	// アドレスをバインド
+	sockAddr := &syscall.SockaddrInet4{Port: addr.Port}
+	copy(sockAddr.Addr[:], addr.IP.To4())
+
+	if err := syscall.Bind(syscallFD, sockAddr); err != nil {
+		return nil, err
+	}
+
+	// リスニング開始
+	if err := syscall.Listen(syscallFD, syscall.SOMAXCONN); err != nil {
+		return nil, err
+	}
+
+	// ファイルディスクリプタを Go の `net.Listener` に変換
+	file := os.NewFile(uintptr(syscallFD), "")
+	listener, err := net.FileListener(file)
+	if err != nil {
+		return nil, err
+	}
+	return listener, nil
 }
 
 // SeedRecords はデータベースに初期データを挿入する
