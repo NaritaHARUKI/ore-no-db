@@ -1,96 +1,184 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"ore-no-db/data"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/gorilla/mux"
 )
 
+// ログファイルのパス
+const logFilePath = "./ore-no-log.log"
+
+// ログファイルのオープン
+func openLogFile() (*os.File, error) {
+	// ファイルをオープン
+	file, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+// ログ書き込み
+func writeLog(url string, statusCode int) {
+	file, err := openLogFile()
+	if err != nil {
+		log.Fatalf("ログファイルオープン失敗: %v", err)
+	}
+	defer file.Close()
+
+	// ログのフォーマット
+	logMessage := fmt.Sprintf("%s - [%s] \"%s\" %d\n", time.Now().Format(time.RFC3339), url, "GET", statusCode)
+	fmt.Println(logMessage)
+	file.WriteString(logMessage)
+}
+
 func main() {
+	// ルーターの作成
+	r := mux.NewRouter()
+
+	// エンドポイントの設定
+	r.HandleFunc("/api/records/seed/{count}", SeedRecords).Methods("POST")
+	r.HandleFunc("/api/records", InsertRecord).Methods("POST")
+	r.HandleFunc("/api/records/{id}", SelectRecord).Methods("GET")
+	r.HandleFunc("/api/records/bulk", BulkInsertRecords).Methods("POST")
+	r.HandleFunc("/api/records/{id}", DeleteRecord).Methods("DELETE")
+	r.HandleFunc("/api/records/{id}", UpdateRecord).Methods("PUT")
+
+	// サーバーを開始
+	http.Handle("/", r)
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+// SeedRecords はデータベースに初期データを挿入する
+func SeedRecords(w http.ResponseWriter, r *http.Request) {
+	// パラメータから count を取得
+	vars := mux.Vars(r)
+	countStr := vars["count"]
+	count, err := strconv.Atoi(countStr) // 文字列を整数に変換
+	if err != nil {
+		http.Error(w, "無効なデータ数", http.StatusBadRequest)
+		return
+	}
+
+	// データベースパスとテーブル名
 	dbPath := "db"
 	tableName := "records"
-	action := "seed"
+	// 初期データの数を決めて挿入
+	data.Seed(dbPath, tableName, count)
 
-	switch action {
-	case "seed":
-		// データベースに初期データを挿入
-		data.Seed(dbPath, tableName, 1000)
-		fmt.Println("初期データが正常に挿入されました。")
-	case "insert":
-		// 単一のレコードを挿入
-		record := data.Record{Name: "ore daesu", Email: "ore@mail.com"}
-		err := Insert(dbPath, tableName, record)
-		if err != nil {
-			log.Fatalf("データ挿入に失敗しました: %v", err)
-		}
-
-	case "select":
-		// レコードを取得
-		id := "1" // 取得するIDを指定
-		_, err := RecordSelect(dbPath, tableName, id)
-		if err != nil {
-			log.Fatalf("レコード取得に失敗しました: %v", err)
-		}
-
-	case "bulk":
-		records := []data.Record{
-			{Name: "ore daesu2", Email: "ore2@mail.com"},
-			{Name: "john doe", Email: "john@mail.com"},
-			{Name: "jane smith", Email: "jane@mail.com"},
-		}
-		// 複数のレコードを挿入
-		err := BulkInsert(dbPath, tableName, records)
-		if err != nil {
-			log.Fatalf("複数レコード挿入に失敗しました: %v", err)
-		}
-	case "delete":
-		// レコードを削除
-		id := "1" // 削除するIDを指定
-		err := data.RecordDelete(dbPath, tableName, id)
-		if err != nil {
-			log.Fatalf("レコード削除に失敗しました: %v", err)
-		}
-		fmt.Println("レコードが正常に削除されました。")
-	case "update":
-		// レコードを更新
-		id := "1" // 更新するIDを指定
-		record := data.Record{Name: "ore daesu", Email: "update@mail.com"}
-		err := data.RecordUpdate(dbPath, tableName, id, record)
-		if err != nil {
-			log.Fatalf("レコード更新に失敗しました: %v", err)
-		}
-		fmt.Println("レコードが正常に更新されました。", record)
-	default:
-		fmt.Println("アクションが指定されていません。")
-	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": "200", "message": fmt.Sprintf("%d 件の初期データが正常に挿入されました", count)})
+	writeLog(r.URL.Path, http.StatusOK)
 }
 
-// Insert は単一のレコードを挿入する
-func Insert(dbPath, tableName string, record data.Record) error {
+// InsertRecord は単一のレコードを挿入する
+func InsertRecord(w http.ResponseWriter, r *http.Request) {
+	var record data.Record
+	if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+		http.Error(w, "無効なデータ", http.StatusBadRequest)
+		return
+	}
+
+	dbPath := "db"
+	tableName := "records"
 	err := data.Insert(dbPath, tableName, record)
 	if err != nil {
-		return err
+		http.Error(w, "データ挿入に失敗しました", http.StatusInternalServerError)
+		return
 	}
-	fmt.Println("レコードが正常に保存されました。")
-	return nil
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(record)
+	writeLog(r.URL.Path, http.StatusCreated)
 }
 
-// RecordSelect はIDでレコードを取得する
-func RecordSelect(dbPath, tableName, id string) (data.Record, error) {
+// SelectRecord はIDでレコードを取得する
+func SelectRecord(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	dbPath := "db"
+	tableName := "records"
+	writeLog(r.URL.Path, http.StatusOK)
+
 	record, err := data.RecordSelect(dbPath, tableName, id)
 	if err != nil {
-		return data.Record{}, err
+		http.Error(w, "レコードが見つかりません", http.StatusNotFound)
+		return
 	}
-	fmt.Println("取得したレコード:", record)
-	return record, nil
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(record)
 }
 
-// BulkInsert は複数のレコードを挿入する
-func BulkInsert(dbPath, tableName string, records []data.Record) error {
+// BulkInsertRecords は複数のレコードを挿入する
+func BulkInsertRecords(w http.ResponseWriter, r *http.Request) {
+	var records []data.Record
+	if err := json.NewDecoder(r.Body).Decode(&records); err != nil {
+		http.Error(w, "無効なデータ", http.StatusBadRequest)
+		return
+	}
+
+	dbPath := "db"
+	tableName := "records"
 	err := data.BulkInsert(dbPath, tableName, records)
 	if err != nil {
-		return err
+		http.Error(w, "複数レコードの挿入に失敗しました", http.StatusInternalServerError)
+		return
 	}
-	fmt.Println("複数のレコードが正常に保存されました。")
-	return nil
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"message": "複数レコードが正常に挿入されました"})
+	writeLog(r.URL.Path, http.StatusCreated)
+}
+
+// DeleteRecord はIDでレコードを削除する
+func DeleteRecord(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+	dbPath := "db"
+	tableName := "records"
+
+	err := data.RecordDelete(dbPath, tableName, id)
+	if err != nil {
+		http.Error(w, "レコード削除に失敗しました", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent) // レコード削除成功
+}
+
+// UpdateRecord はIDでレコードを更新する
+func UpdateRecord(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var record data.Record
+	if err := json.NewDecoder(r.Body).Decode(&record); err != nil {
+		http.Error(w, "無効なデータ", http.StatusBadRequest)
+		return
+	}
+
+	dbPath := "db"
+	tableName := "records"
+	err := data.RecordUpdate(dbPath, tableName, id, record)
+	if err != nil {
+		http.Error(w, "レコード更新に失敗しました", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(record)
+	writeLog(r.URL.Path, http.StatusOK)
 }

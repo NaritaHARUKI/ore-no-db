@@ -26,7 +26,7 @@ func Seed(dbPath string, tableName string, count int) error {
 			return err
 		}
 
-		dataFile := filepath.Join(dirPath, fmt.Sprintf("%s.json", record.ID))
+		dataFile := filepath.Join(dirPath, "data.json")
 		// JSONファイルにレコードを書き込む
 		data, err := json.MarshalIndent(record, "", "  ")
 		if err != nil {
