@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 )
 
@@ -52,9 +53,15 @@ func main() {
 	r.HandleFunc("/api/records/{id}", DeleteRecord).Methods("DELETE")
 	r.HandleFunc("/api/records/{id}", UpdateRecord).Methods("PUT")
 
-	// サーバーを開始
-	http.Handle("/", r)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// CORS設定を追加
+	cors := handlers.CORS(
+		handlers.AllowedOrigins([]string{"*"}),                             // すべてのオリジンを許可
+		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE"}),  // 許可するHTTPメソッド
+		handlers.AllowedHeaders([]string{"Content-Type", "Authorization"}), // 許可するHTTPヘッダ
+	)
+
+	// CORSを有効にしてサーバーを開始
+	log.Fatal(http.ListenAndServe(":8080", cors(r)))
 }
 
 // SeedRecords はデータベースに初期データを挿入する
